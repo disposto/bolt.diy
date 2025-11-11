@@ -60,7 +60,7 @@ export const STARTER_TEMPLATES: Template[] = [
     name: 'Vite Shadcn',
     label: 'Vite with shadcn/ui',
     description: 'Vite starter fullstack template integrated with shadcn/ui components and styling system',
-    githubRepo: 'xKevIsDev/vite-shadcn',
+    githubRepo: 'doinel1a/vite-react-ts-shadcn-ui',
     tags: ['vite', 'react', 'typescript', 'shadcn', 'tailwind'],
     icon: 'i-bolt:shadcn',
   },

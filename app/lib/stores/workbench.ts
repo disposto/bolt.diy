@@ -87,6 +87,11 @@ export class WorkbenchStore {
     return this.#previewsStore.previews;
   }
 
+  // Refresh all active previews (forces iframe reloads across tabs)
+  refreshAllPreviews() {
+    this.#previewsStore.refreshAllPreviews();
+  }
+
   get files() {
     return this.#filesStore.files;
   }

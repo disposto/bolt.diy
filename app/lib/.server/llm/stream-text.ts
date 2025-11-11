@@ -26,6 +26,60 @@ export interface StreamingOptions extends Omit<Parameters<typeof _streamText>[0]
 
 const logger = createScopedLogger('stream-text');
 
+// Hard cap to keep request history within safe limits across providers
+const MAX_HISTORY_CHARS = 250_000;
+
+// Minimal shape for message parts we care about when measuring text length/sanitization
+type TextPartLike = {
+  type?: string;
+  text?: string;
+};
+
+function getMessageCharLength(message: any): number {
+  if (Array.isArray(message.content)) {
+    const parts = message.content as TextPartLike[];
+    return parts.reduce((sum: number, part: TextPartLike) => {
+      if (part?.type === 'text') {
+        return sum + (part.text?.length || 0);
+      }
+
+      return sum;
+    }, 0);
+  }
+
+  return (message.content || '').length;
+}
+
+function trimMessagesByCharBudget<T extends { content: any }>(messages: T[], budget: number): T[] {
+  if (!messages?.length) {
+    return messages;
+  }
+
+  let total = 0;
+  const reversed = [...messages].reverse();
+  const kept: T[] = [];
+
+  for (const msg of reversed) {
+    const len = getMessageCharLength(msg);
+
+    // Always keep at least the last message
+    if (kept.length === 0) {
+      kept.push(msg);
+      total += len;
+      continue;
+    }
+
+    if (total + len > budget) {
+      break;
+    }
+
+    kept.push(msg);
+    total += len;
+  }
+
+  return kept.reverse();
+}
+
 function getCompletionTokenLimit(modelDetails: any): number {
   // 1. If model specifies completion tokens, use that
   if (modelDetails.maxCompletionTokens && modelDetails.maxCompletionTokens > 0) {
@@ -96,13 +150,17 @@ export async function streamText(props: {
 
     // Sanitize all text parts in parts array, if present
     if (Array.isArray(message.parts)) {
-      newMessage.parts = message.parts.map((part) =>
-        part.type === 'text' ? { ...part, text: sanitizeText(part.text) } : part,
-      );
+      newMessage.parts = (message.parts as unknown[]).map((part: unknown) => {
+        const p = part as { type?: string; text?: string };
+        return p.type === 'text' ? { ...p, text: sanitizeText(p.text ?? '') } : part;
+      }) as typeof message.parts;
     }
 
     return newMessage;
   });
+
+  // Apply conservative history trimming to prevent token-limit errors
+  processedMessages = trimMessagesByCharBudget(processedMessages as any, MAX_HISTORY_CHARS) as any;
 
   const provider = PROVIDER_LIST.find((p) => p.name === currentProvider) || DEFAULT_PROVIDER;
   const staticModels = LLMManager.getInstance().getStaticModelListFromProvider(provider);

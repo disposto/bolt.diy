@@ -80,14 +80,14 @@ export const detectProjectType = async (
     if (availableCommand) {
       return {
         type: 'Node.js',
-        setupCommand: `npm install && npm run ${availableCommand}`,
+        setupCommand: `npx --yes update-browserslist-db@latest --update-db && npm install && npm run ${availableCommand}`,
         followupMessage: `Found "${availableCommand}" script in package.json. Running "npm run ${availableCommand}" after installation.`,
       };
     }
 
     return {
       type: 'Node.js',
-      setupCommand: 'npm install',
+      setupCommand: 'npx --yes update-browserslist-db@latest --update-db && npm install',
       followupMessage:
         'Would you like me to inspect package.json to determine the available scripts for running this project?',
     };

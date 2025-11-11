@@ -1,17 +1,17 @@
 import { json } from '@remix-run/cloudflare';
 import JSZip from 'jszip';
 
-// Function to detect if we're running in Cloudflare
-function isCloudflareEnvironment(context: any): boolean {
-  // Check if we're in production AND have Cloudflare Pages specific env vars
-  const isProduction = process.env.NODE_ENV === 'production';
-  const hasCfPagesVars = !!(
-    context?.cloudflare?.env?.CF_PAGES ||
-    context?.cloudflare?.env?.CF_PAGES_URL ||
-    context?.cloudflare?.env?.CF_PAGES_COMMIT_SHA
-  );
+// Helper to decode base64 content safely in Node or Cloudflare
+function decodeBase64(b64: string): string {
+  try {
+    // Prefer Node Buffer when available
 
-  return isProduction && hasCfPagesVars;
+    return Buffer.from(b64, 'base64').toString('utf8');
+  } catch {
+    // Fallback to atob in worker-like environments
+
+    return atob(b64);
+  }
 }
 
 // Cloudflare-compatible method using GitHub Contents API
@@ -95,7 +95,7 @@ async function fetchRepoContentsCloudflare(repo: string, githubToken?: string) {
         }
 
         const contentData = (await contentResponse.json()) as any;
-        const content = atob(contentData.content.replace(/\s/g, ''));
+        const content = decodeBase64(String(contentData.content).replace(/\s/g, ''));
 
         return {
           name: file.path.split('/').pop() || '',
@@ -201,6 +201,80 @@ async function fetchRepoContentsZip(repo: string, githubToken?: string) {
   return results.filter(Boolean);
 }
 
+// Fallback method: fetch zipball of default branch when releases are missing
+async function fetchRepoContentsZipByBranch(repo: string, githubToken?: string) {
+  const baseUrl = 'https://api.github.com';
+
+  // Get repository info to determine default branch
+  const repoResponse = await fetch(`${baseUrl}/repos/${repo}`, {
+    headers: {
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'bolt.diy-app',
+      ...(githubToken ? { Authorization: `Bearer ${githubToken}` } : {}),
+    },
+  });
+
+  if (!repoResponse.ok) {
+    throw new Error(`Repository not found: ${repo}`);
+  }
+
+  const repoData = (await repoResponse.json()) as any;
+  const defaultBranch = repoData.default_branch || 'main';
+
+  // Download zipball for the default branch
+  const zipResponse = await fetch(`${baseUrl}/repos/${repo}/zipball/${defaultBranch}`, {
+    headers: {
+      'User-Agent': 'bolt.diy-app',
+      ...(githubToken ? { Authorization: `Bearer ${githubToken}` } : {}),
+    },
+  });
+
+  if (!zipResponse.ok) {
+    throw new Error(`Failed to fetch branch zipball: ${zipResponse.status}`);
+  }
+
+  const zipArrayBuffer = await zipResponse.arrayBuffer();
+  const zip = await JSZip.loadAsync(zipArrayBuffer);
+
+  // Detect root prefix created by GitHub zipball
+  let rootFolderName = '';
+  zip.forEach((relativePath) => {
+    if (!rootFolderName && relativePath.includes('/')) {
+      rootFolderName = relativePath.split('/')[0];
+    }
+  });
+
+  const promises = Object.keys(zip.files).map(async (filename) => {
+    const zipEntry = zip.files[filename];
+
+    if (zipEntry.dir) {
+      return null;
+    }
+
+    if (filename === rootFolderName) {
+      return null;
+    }
+
+    let normalizedPath = filename;
+
+    if (rootFolderName && filename.startsWith(rootFolderName + '/')) {
+      normalizedPath = filename.substring(rootFolderName.length + 1);
+    }
+
+    const content = await zipEntry.async('string');
+
+    return {
+      name: normalizedPath.split('/').pop() || '',
+      path: normalizedPath,
+      content,
+    };
+  });
+
+  const results = await Promise.all(promises);
+
+  return results.filter(Boolean) as Array<{ name: string; path: string; content: string }>;
+}
+
 export async function loader({ request, context }: { request: Request; context: any }) {
   const url = new URL(request.url);
   const repo = url.searchParams.get('repo');
@@ -216,10 +290,21 @@ export async function loader({ request, context }: { request: Request; context: 
 
     let fileList;
 
-    if (isCloudflareEnvironment(context)) {
+    /*
+     * Prefer API tree + contents (works across environments), then fallback to zipball by branch,
+     * and finally fallback to latest release zipball.
+     */
+    try {
       fileList = await fetchRepoContentsCloudflare(repo, githubToken);
-    } else {
-      fileList = await fetchRepoContentsZip(repo, githubToken);
+    } catch (e1) {
+      console.warn('Tree/contents API failed, falling back to branch zipball:', e1);
+
+      try {
+        fileList = await fetchRepoContentsZipByBranch(repo, githubToken);
+      } catch (e2) {
+        console.warn('Branch zipball failed, falling back to latest release zipball:', e2);
+        fileList = await fetchRepoContentsZip(repo, githubToken);
+      }
     }
 
     // Filter out .git files for both methods

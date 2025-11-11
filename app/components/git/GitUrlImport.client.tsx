@@ -43,6 +43,13 @@ export function GitUrlImport() {
   const [imported, setImported] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  /*
+   * Hard cap to keep initial import message within a safe size for LLM context.
+   * This reduces the likelihood of hitting token/window limits when the first user prompt is sent.
+   */
+  const MAX_IMPORT_CHARS = 250_000; // ~150–180k tokens depending on content; conservative budget
+  const PER_FILE_CHAR_LIMIT = 30_000; // cap very large files individually
+
   const importRepo = async (repoUrl?: string) => {
     if (!gitReady && !historyReady) {
       return;
@@ -69,14 +76,49 @@ export function GitUrlImport() {
             })
             .filter((f) => f.content);
 
+          /*
+           * Trim extremely large imports so the initial conversation remains within the model's context window.
+           * Strategy:
+           * - Truncate any single file to PER_FILE_CHAR_LIMIT
+           * - Accumulate files until MAX_IMPORT_CHARS budget is reached
+           * - Omit the rest with a summary note
+           */
+          const trimmedFiles: { path: string; content: string }[] = [];
+          let budget = MAX_IMPORT_CHARS;
+
+          for (const f of fileContents) {
+            if (budget <= 0) {
+              break;
+            }
+
+            const originalLength = f.content.length;
+            const truncatedContent =
+              originalLength > PER_FILE_CHAR_LIMIT
+                ? `${f.content.slice(0, PER_FILE_CHAR_LIMIT)}\n/* ... file content truncated for initial import ... */`
+                : f.content;
+
+            // Roughly account for tag overhead in the message payload
+            const overhead = 200 + f.path.length;
+            const cost = truncatedContent.length + overhead;
+
+            if (cost <= budget) {
+              trimmedFiles.push({ path: f.path, content: truncatedContent });
+              budget -= cost;
+            } else {
+              break;
+            }
+          }
+
+          const omittedCount = Math.max(0, fileContents.length - trimmedFiles.length);
+
           const commands = await detectProjectCommands(fileContents);
           const commandsMessage = createCommandsMessage(commands);
 
           const filesMessage: Message = {
             role: 'assistant',
             content: `Cloning the repo ${repoUrl} into ${workdir}
-<boltArtifact id="imported-files" title="Git Cloned Files"  type="bundled">
-${fileContents
+<boltArtifact id="imported-files" title="Git Cloned Files (trimmed)" type="bundled">
+${trimmedFiles
   .map(
     (file) =>
       `<boltAction type="file" filePath="${file.path}">
@@ -84,7 +126,8 @@ ${escapeBoltTags(file.content)}
 </boltAction>`,
   )
   .join('\n')}
-</boltArtifact>`,
+</boltArtifact>
+${omittedCount > 0 ? `\n/* ${omittedCount} file(s) omitted from initial chat import to keep the context size under control. The full repository is already cloned to ${workdir}. Ask me to open specific files when needed. */` : ''}`,
             id: generateId(),
             createdAt: new Date(),
           };

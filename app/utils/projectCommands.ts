@@ -23,6 +23,10 @@ function makeNonInteractive(command: string): string {
     { pattern: /npx\s+([^@\s]+@?[^\s]*)\s+init/g, replacement: 'echo "y" | npx --yes $1 init --defaults --yes' },
     { pattern: /npx\s+create-([^\s]+)/g, replacement: 'npx --yes create-$1 --template default' },
     { pattern: /npx\s+([^@\s]+@?[^\s]*)\s+add/g, replacement: 'npx --yes $1 add --defaults --yes' },
+    {
+      pattern: /npx\s+update-browserslist-db(@latest)?(\s+--update-db)?/g,
+      replacement: 'npx --yes update-browserslist-db@latest --update-db',
+    },
     { pattern: /npm\s+install(?!\s+--)/g, replacement: 'npm install --yes --no-audit --no-fund --silent' },
     { pattern: /yarn\s+add(?!\s+--)/g, replacement: 'yarn add --non-interactive' },
     { pattern: /pnpm\s+add(?!\s+--)/g, replacement: 'pnpm add --yes' },
@@ -65,8 +69,8 @@ export async function detectProjectCommands(files: FileContent[]): Promise<Proje
       const preferredCommands = ['dev', 'start', 'preview'];
       const availableCommand = preferredCommands.find((cmd) => scripts[cmd]);
 
-      // Build setup command with non-interactive handling
-      let baseSetupCommand = 'npx update-browserslist-db@latest && npm install';
+      // Build setup command with non-interactive handling (force non-interactive npx and update-db)
+      let baseSetupCommand = 'npx --yes update-browserslist-db@latest --update-db && npm install';
 
       // Add shadcn init if it's a shadcn project
       if (isShadcnProject) {

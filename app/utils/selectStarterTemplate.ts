@@ -63,7 +63,9 @@ Important: Provide only the selection tags in your response, no additional text.
 MOST IMPORTANT: YOU DONT HAVE TIME TO THINK JUST START RESPONDING BASED ON HUNCH 
 `;
 
-const templates: Template[] = STARTER_TEMPLATES.filter((t) => !t.name.includes('shadcn'));
+// Restrict selectable templates to the enforced stack
+const ALLOWED_TEMPLATE_NAMES = ['Vite Shadcn'];
+const templates: Template[] = STARTER_TEMPLATES.filter((t) => ALLOWED_TEMPLATE_NAMES.includes(t.name));
 
 const parseSelectedTemplate = (llmOutput: string): { template: string; title: string } | null => {
   try {
@@ -101,15 +103,27 @@ export const selectStarterTemplate = async (options: { message: string; model: s
   const selectedTemplate = parseSelectedTemplate(text);
 
   if (selectedTemplate) {
-    return selectedTemplate;
-  } else {
-    console.log('No template selected, using blank template');
+    const allowedNames = new Set(templates.map((t) => t.name));
+    const chosen =
+      allowedNames.has(selectedTemplate.template) && selectedTemplate.template !== 'blank'
+        ? selectedTemplate.template
+        : templates[0]?.name || 'blank';
 
     return {
-      template: 'blank',
-      title: '',
+      template: chosen,
+      title: selectedTemplate.title || 'Untitled Project',
     };
   }
+
+  console.log('No template selected, defaulting to first allowed template');
+
+  // Fallback to the first allowed starter when LLM selection fails
+  const fallback = templates[0]?.name || 'blank';
+
+  return {
+    template: fallback,
+    title: '',
+  };
 };
 
 const getGitHubRepoContent = async (repoName: string): Promise<{ name: string; path: string; content: string }[]> => {
@@ -139,7 +153,140 @@ export async function getTemplates(templateName: string, title?: string) {
   }
 
   const githubRepo = template.githubRepo;
-  const files = await getGitHubRepoContent(githubRepo);
+  let files: { name: string; path: string; content: string }[] = [];
+  let usedFallbackSkeleton = false;
+
+  // If GitHub fetch fails, build a minimal Vite+React skeleton to avoid blank template
+  const buildFallbackSkeleton = () => {
+    usedFallbackSkeleton = true;
+
+    const skeletonFiles: { name: string; path: string; content: string }[] = [
+      {
+        name: 'package.json',
+        path: 'package.json',
+        content: `{
+  "name": "vite-react-shadcn-skeleton",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "tailwindcss": "^4.0.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0"
+  }
+}`,
+      },
+      {
+        name: 'index.html',
+        path: 'index.html',
+        content: `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vite React Shadcn Skeleton</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>`,
+      },
+      {
+        name: 'vite.config.ts',
+        path: 'vite.config.ts',
+        content: `import path from 'path'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+import { defineConfig } from 'vite'
+
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: { '@': path.resolve(__dirname, './src') }
+  }
+})`,
+      },
+      {
+        name: 'tsconfig.json',
+        path: 'tsconfig.json',
+        content: `{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "esnext",
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}`,
+      },
+      {
+        name: 'index.css',
+        path: 'src/index.css',
+        content: `@import "tailwindcss";`,
+      },
+      {
+        name: 'main.tsx',
+        path: 'src/main.tsx',
+        content: `import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App'
+import './index.css'
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+)`,
+      },
+      {
+        name: 'App.tsx',
+        path: 'src/App.tsx',
+        content: `import { useState } from 'react'
+
+export default function App() {
+  const [count, setCount] = useState(0)
+  return (
+    <div className="min-h-svh flex flex-col items-center justify-center">
+      <h1 className="text-2xl font-bold">Vite + React + Tailwind pronto</h1>
+      <button className="mt-4 px-4 py-2 rounded bg-black text-white" onClick={() => setCount((c) => c + 1)}>
+        Count {count}
+      </button>
+      <p className="mt-2 text-sm text-gray-500">Adicione shadcn/ui depois com o CLI.</p>
+    </div>
+  )
+}`,
+      },
+    ];
+
+    return skeletonFiles;
+  };
+
+  try {
+    files = await getGitHubRepoContent(githubRepo);
+  } catch (e) {
+    console.warn('Falha ao importar template do GitHub. Usando esqueleto Vite local.', e);
+    files = buildFallbackSkeleton();
+  }
 
   let filteredFiles = files;
 
@@ -183,10 +330,54 @@ export async function getTemplates(templateName: string, title?: string) {
     filesToImport.ignoreFile = ignoredFiles;
   }
 
+  const MAX_IMPORT_CHARS = 250000;
+  const PER_FILE_CHAR_LIMIT = 30000;
+
+  const trimmedFiles: { path: string; content: string }[] = [];
+  let budget = MAX_IMPORT_CHARS;
+
+  // Prioritize essential files so npm scripts can run reliably
+  const REQUIRED_FILE_NAMES = [
+    'package.json',
+    'package-lock.json',
+    'pnpm-lock.yaml',
+    'yarn.lock',
+    'vite.config.ts',
+    'vite.config.js',
+    'index.html',
+  ];
+  const requiredSet = new Set<string>(REQUIRED_FILE_NAMES);
+  const requiredFiles = filesToImport.files.filter((f) => requiredSet.has(f.name));
+  const otherFiles = filesToImport.files.filter((f) => !requiredSet.has(f.name));
+  const prioritizedFiles = [...requiredFiles, ...otherFiles];
+
+  for (const f of prioritizedFiles) {
+    if (budget <= 0) {
+      break;
+    }
+
+    const originalLength = f.content.length;
+    const truncatedContent =
+      originalLength > PER_FILE_CHAR_LIMIT
+        ? `${f.content.slice(0, PER_FILE_CHAR_LIMIT)}\n/* ... file content truncated for initial import ... */`
+        : f.content;
+    const overhead = 200 + f.path.length;
+    const cost = truncatedContent.length + overhead;
+
+    if (cost <= budget) {
+      trimmedFiles.push({ path: f.path, content: truncatedContent });
+      budget -= cost;
+    } else {
+      break;
+    }
+  }
+
+  const omittedCount = Math.max(0, filesToImport.files.length - trimmedFiles.length);
+
   const assistantMessage = `
 Bolt is initializing your project with the required files using the ${template.name} template.
 <boltArtifact id="imported-files" title="${title || 'Create initial files'}" type="bundled">
-${filesToImport.files
+${trimmedFiles
   .map(
     (file) =>
       `<boltAction type="file" filePath="${file.path}">
@@ -195,7 +386,44 @@ ${file.content}
   )
   .join('\n')}
 </boltArtifact>
-`;
+<boltArtifact id="project-setup" title="Project Setup">
+${(() => {
+  // Detect package manager by lock files in the full file list (not only trimmed)
+  const hasPnpmLock = filesToImport.files.some((f) => f.name === 'pnpm-lock.yaml');
+  const hasYarnLock = filesToImport.files.some((f) => f.name === 'yarn.lock');
+  const hasNpmLock = filesToImport.files.some((f) => f.name === 'package-lock.json');
+
+  let installCmd = 'npm install';
+  let startCmd = 'npm run dev';
+
+  if (hasPnpmLock) {
+    installCmd = 'pnpm install';
+    startCmd = 'pnpm dev';
+  } else if (hasYarnLock) {
+    installCmd = 'yarn install';
+    startCmd = 'yarn dev';
+  } else if (hasNpmLock) {
+    installCmd = 'npm install';
+    startCmd = 'npm run dev';
+  }
+
+  return `<boltAction type="shell">${installCmd}</boltAction>\n<boltAction type="start">${startCmd}</boltAction>`;
+})()}
+</boltArtifact>
+<boltArtifact id="template-snapshot" title="Template Snapshot">
+<boltAction type="file" filePath=".bolt/snapshots/template.json">{
+  "template": "${template.name}",
+  "repo": "${githubRepo}",
+  "importedFileCount": ${trimmedFiles.length},
+  "omittedCount": ${omittedCount},
+  "prioritizedFiles": ${JSON.stringify(requiredFiles.map((f) => f.path))}
+}</boltAction>
+</boltArtifact>
+<boltArtifact id="webcontainer-snapshot" title="WebContainers Snapshot">
+<boltAction type="file" filePath=".bolt/snapshots/webcontainer.md"># WebContainers Snapshot\n\nThe following commands will output environment details to the Terminal.\n\n- Node and npm versions\n- Current directory listing\n- Contents of package.json\n\nYou can re-run them later from the Terminal as needed.</boltAction>
+<boltAction type="shell">node -v && npm -v && ls -la && cat package.json</boltAction>
+</boltArtifact>
+${omittedCount > 0 ? `\n/* ${omittedCount} file(s) omitted from initial chat import to keep the context size under control. The full template is available. Ask to open specific files when needed. */` : ''}`;
   let userMessage = ``;
   const templatePromptFile = files.filter((x) => x.path.startsWith('.bolt')).find((x) => x.name == 'prompt');
 
@@ -247,6 +475,11 @@ Now that the Template is imported please continue with my original request
 
 IMPORTANT: Dont Forget to install the dependencies before running the app by using \`npm install && npm run dev\`
 `;
+
+  if (usedFallbackSkeleton) {
+    userMessage += `
+NOTE: O import via GitHub falhou; para evitar projeto em branco, inicializei um esqueleto local Vite + React + Tailwind com script \`dev\` funcionando. Você pode depois rodar \`npx shadcn-ui@latest init\` para adicionar componentes shadcn/ui.`;
+  }
 
   return {
     assistantMessage,

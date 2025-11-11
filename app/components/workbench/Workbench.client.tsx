@@ -22,7 +22,6 @@ import { EditorPanel } from './EditorPanel';
 import { Preview } from './Preview';
 import useViewport from '~/lib/hooks';
 
-import { usePreviewStore } from '~/lib/stores/previews';
 import { chatStore } from '~/lib/stores/chat';
 import type { ElementInfo } from './Inspector';
 import { ExportChatButton } from '~/components/chat/chatExportAndImport/ExportChatButton';
@@ -340,8 +339,7 @@ export const Workbench = memo(
         .saveCurrentDocument()
         .then(() => {
           // Explicitly refresh all previews after a file save
-          const previewStore = usePreviewStore();
-          previewStore.refreshAllPreviews();
+          workbenchStore.refreshAllPreviews();
         })
         .catch(() => {
           toast.error('Failed to update file content');

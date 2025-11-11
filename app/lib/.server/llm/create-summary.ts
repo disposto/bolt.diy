@@ -7,6 +7,59 @@ import { LLMManager } from '~/lib/modules/llm/manager';
 
 const logger = createScopedLogger('create-summary');
 
+// Hard cap to keep request history within safe limits across providers
+const MAX_HISTORY_CHARS = 250_000;
+
+// Minimal shape for message parts we care about when measuring text length
+type TextPartLike = {
+  type?: string;
+  text?: string;
+};
+
+function getMessageCharLength(message: any): number {
+  if (Array.isArray(message.content)) {
+    const parts = message.content as TextPartLike[];
+    return parts.reduce((sum: number, part: TextPartLike) => {
+      if (part?.type === 'text') {
+        return sum + (part.text?.length || 0);
+      }
+
+      return sum;
+    }, 0);
+  }
+
+  return (message.content || '').length;
+}
+
+function trimMessagesByCharBudget<T extends { content: any }>(msgs: T[], budget: number): T[] {
+  if (!msgs?.length) {
+    return msgs;
+  }
+
+  let total = 0;
+  const reversed = [...msgs].reverse();
+  const kept: T[] = [];
+
+  for (const msg of reversed) {
+    const len = getMessageCharLength(msg);
+
+    if (kept.length === 0) {
+      kept.push(msg);
+      total += len;
+      continue;
+    }
+
+    if (total + len > budget) {
+      break;
+    }
+
+    kept.push(msg);
+    total += len;
+  }
+
+  return kept.reverse();
+}
+
 export async function createSummary(props: {
   messages: Message[];
   env?: Env;
@@ -19,7 +72,7 @@ export async function createSummary(props: {
   const { messages, env: serverEnv, apiKeys, providerSettings, onFinish } = props;
   let currentModel = DEFAULT_MODEL;
   let currentProvider = DEFAULT_PROVIDER.name;
-  const processedMessages = messages.map((message) => {
+  let processedMessages = messages.map((message) => {
     if (message.role === 'user') {
       const { model, provider, content } = extractPropertiesFromMessage(message);
       currentModel = model;
@@ -38,6 +91,9 @@ export async function createSummary(props: {
 
     return message;
   });
+
+  // Trim message history by a conservative character budget to avoid token overflow
+  processedMessages = trimMessagesByCharBudget(processedMessages as any, MAX_HISTORY_CHARS) as any;
 
   const provider = PROVIDER_LIST.find((p) => p.name === currentProvider) || DEFAULT_PROVIDER;
   const staticModels = LLMManager.getInstance().getStaticModelListFromProvider(provider);
